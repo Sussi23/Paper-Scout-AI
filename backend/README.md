@@ -1,21 +1,20 @@
 # PaperScout AI — Backend
 
-A real AI agent (Gemini function calling through `google-genai`) that searches the OpenAlex scholarly database
-and screens papers for relevance, exposed as a FastAPI service for the website. This folder is the **backend only**.
+Một AI agent thật (Gemini function calling qua thư viện `google-genai`) tìm kiếm bài báo khoa học trên cơ sở dữ liệu
+OpenAlex và sàng lọc mức độ liên quan, được cung cấp dưới dạng dịch vụ FastAPI cho website gọi. Thư mục này **chỉ chứa backend**.
 
-- **Gemini decides**: which tool to call, which keywords to use, how to change the query after seeing results,
-  and when to stop.
-- **Code decides**: executing tools, validating arguments, the search budget, the source of truth for metadata,
-  error handling, the final status, and logging.
-- Title, authors, year, DOI, abstract and URL come **only from OpenAlex** (kept in a registry keyed by `paper_id`).
-  Gemini returns just `paper_id` + label + reason.
+- **Gemini quyết định**: gọi tool nào, dùng từ khoá gì, đổi truy vấn thế nào sau khi xem kết quả, và khi nào dừng.
+- **Code quyết định**: thực thi tool, kiểm tra tham số, ngân sách tìm kiếm, nguồn sự thật của metadata, xử lý lỗi,
+  tính trạng thái cuối và ghi log.
+- Tên bài, tác giả, năm, DOI, abstract và URL **chỉ lấy từ OpenAlex** (lưu trong registry theo `paper_id`).
+  Gemini chỉ trả về `paper_id` + nhãn + lý do.
 
-All commands below are run from the **repository root** (the folder that contains `backend/`), not from `backend/`.
+Mọi lệnh dưới đây chạy từ **thư mục gốc của repo** (thư mục chứa `backend/`), không chạy từ trong `backend/`.
 
-<!-- BEGIN: FOR TV5 (copy into the root README) -->
-## Installation
+<!-- BẮT ĐẦU: DÀNH CHO TV5 (dán vào README gốc) -->
+## Cài đặt (Installation)
 
-Requires Python 3.10 or newer (tested on 3.10.0).
+Cần Python 3.10 trở lên (đã kiểm tra trên 3.10.0).
 
 ```bash
 python -m venv .venv
@@ -24,76 +23,76 @@ pip install -r backend/requirements.txt
 cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
 ```
 
-Fill in `.env` (never commit it): `GEMINI_API_KEY`, `OPENALEX_API_KEY`, and `GEMINI_MODEL`. There is no default
-model on purpose; run `python scripts/list_models.py` to see which models your key can use.
+Điền file `.env` (không bao giờ commit file này): `GEMINI_API_KEY`, `OPENALEX_API_KEY` và `GEMINI_MODEL`.
+Cố ý không có model mặc định; chạy `python scripts/list_models.py` để xem key của bạn dùng được model nào.
 
-## How to Run
+## Cách chạy (How to Run)
 
 ```bash
-uvicorn backend.main:app --reload      # API on http://127.0.0.1:8000, interactive docs at /docs
+uvicorn backend.main:app --reload      # API tại http://127.0.0.1:8000, tài liệu tương tác tại /docs
 ```
 
-Check it with `GET /health`. One research run takes about 1-2 minutes, so a client must wait at least 3 minutes.
+Kiểm tra bằng `GET /health`. Một lần chạy nghiên cứu mất khoảng 1–2 phút, nên phía client phải chờ ít nhất 3 phút.
 
-## Testing
+## Kiểm thử (Testing)
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest                                  # offline: no network, no keys needed
+pytest                                  # chạy offline: không cần mạng, không cần key
 ```
 
-Live tests that call the real Gemini/OpenAlex APIs (they use quota) are off by default; see "Testing" below.
-<!-- END: FOR TV5 -->
+Test live gọi API thật của Gemini/OpenAlex (tốn quota) mặc định bị tắt; xem mục "3. Kiểm thử" bên dưới.
+<!-- KẾT THÚC: DÀNH CHO TV5 -->
 
-## 1. Configuration
+## 1. Cấu hình
 
-Read from environment variables, or from a `.env` file in the repository root (environment variables win).
-The server starts without keys (so `/health` works), but `POST /api/research` returns 503 until the required
-ones are set. `.env.example` lists every name.
+Đọc từ biến môi trường, hoặc từ file `.env` ở thư mục gốc repo (biến môi trường được ưu tiên hơn).
+Server vẫn khởi động được khi chưa có key (để `/health` hoạt động), nhưng `POST /api/research` trả 503 cho đến khi
+đặt đủ các biến bắt buộc. File `.env.example` liệt kê đầy đủ tên các biến.
 
-| Variable | Required | Default | Meaning |
+| Biến | Bắt buộc | Mặc định | Ý nghĩa |
 |---|---|---|---|
-| `GEMINI_API_KEY` | yes | none | Google AI Studio API key |
-| `GEMINI_MODEL` | yes | none | Gemini model name (see `scripts/list_models.py`) |
-| `GEMINI_TEMPERATURE` | no | model default | Leave empty unless you are experimenting |
-| `GEMINI_MIN_INTERVAL_SECONDS` | no | `2` | Minimum gap between Gemini calls (helps avoid 429) |
-| `OPENALEX_API_KEY` | yes | none | OpenAlex key, sent as `Authorization: Bearer` |
-| `MAX_SEARCHES` | no | `3` | Search budget per run; `search_papers` and `find_related_papers` both count |
-| `MAX_MODEL_STEPS` | no | `12` | Hard cap on model turns per run |
-| `SEARCH_PAGE_SIZE` | no | `25` | Results per search (also the cap on a tool's `limit`) |
-| `ABSTRACT_CHARS_FOR_MODEL` | no | `1200` | Abstract characters shown to the model |
-| `MAX_CONCURRENT_RUNS` | no | `1` | Parallel runs; others wait up to 90 s, then get HTTP 429 |
-| `ALLOWED_ORIGINS` | no | empty | Comma-separated frontend origins allowed by CORS |
-| `LOG_DIR` | no | `logs` | Where per-run JSONL logs are written |
-| `RUNS_DIR` | no | `runs` | Where `result.json` and `results.csv` are saved |
-| `CRITERIA_PATH` | no | `evaluation/screening_criteria.md` | Screening criteria, re-read on every run |
+| `GEMINI_API_KEY` | có | không | API key của Google AI Studio |
+| `GEMINI_MODEL` | có | không | Tên model Gemini (xem `scripts/list_models.py`) |
+| `GEMINI_TEMPERATURE` | không | mặc định của model | Để trống trừ khi bạn đang thử nghiệm |
+| `GEMINI_MIN_INTERVAL_SECONDS` | không | `2` | Khoảng cách tối thiểu giữa các lần gọi Gemini (giúp tránh lỗi 429) |
+| `OPENALEX_API_KEY` | có | không | API key OpenAlex, gửi qua header `Authorization: Bearer` |
+| `MAX_SEARCHES` | không | `3` | Ngân sách tìm kiếm mỗi lần chạy; `search_papers` và `find_related_papers` đều tính vào |
+| `MAX_MODEL_STEPS` | không | `12` | Số lượt model tối đa mỗi lần chạy |
+| `SEARCH_PAGE_SIZE` | không | `25` | Số kết quả mỗi lần tìm (đồng thời là mức trần của tham số `limit` trong tool) |
+| `ABSTRACT_CHARS_FOR_MODEL` | không | `1200` | Số ký tự abstract đưa cho model |
+| `MAX_CONCURRENT_RUNS` | không | `1` | Số lần chạy song song; lần chạy khác chờ tối đa 90 giây rồi nhận HTTP 429 |
+| `ALLOWED_ORIGINS` | không | rỗng | Danh sách origin của frontend được CORS cho phép, phân tách bằng dấu phẩy |
+| `LOG_DIR` | không | `logs` | Nơi ghi log JSONL của từng lần chạy |
+| `RUNS_DIR` | không | `runs` | Nơi lưu `result.json` và `results.csv` |
+| `CRITERIA_PATH` | không | `evaluation/screening_criteria.md` | Tiêu chí sàng lọc, được đọc lại ở mỗi lần chạy |
 
-Keys are never printed: they are masked (`***`) in logs, error messages, `tool_history` and API output, and
-`/health` only reports whether each key is configured.
+Key không bao giờ bị in ra: chúng bị che (`***`) trong log, thông báo lỗi, `tool_history` và kết quả API;
+`/health` chỉ báo mỗi key đã được cấu hình hay chưa.
 
-## 2. API contract
+## 2. Hợp đồng API
 
-Base URL in development: `http://127.0.0.1:8000`. Interactive documentation (Swagger UI): `/docs`.
+URL gốc khi phát triển: `http://127.0.0.1:8000`. Tài liệu tương tác (Swagger UI): `/docs`.
 
 ### `POST /api/research`
 
-Runs the agent synchronously (about 1-2 minutes) and returns the result.
+Chạy agent đồng bộ (khoảng 1–2 phút) rồi trả kết quả.
 
-Request body:
+Nội dung request:
 
-| Field | Type | Rules |
+| Trường | Kiểu | Quy tắc |
 |---|---|---|
-| `topic` | string | required, 3-300 characters after trimming |
-| `year_from`, `year_to` | integer or null | 1900 to next year; `year_from <= year_to` |
-| `num_papers` | integer | 1-30, default 10 |
-| `criteria` | string or null | extra screening criteria, at most 1000 characters |
-| `language` | `"vi"` or `"en"` | language of each paper's `reason`, default `"vi"` |
+| `topic` | string | bắt buộc, 3–300 ký tự sau khi cắt khoảng trắng hai đầu |
+| `year_from`, `year_to` | số nguyên hoặc null | từ 1900 đến năm sau năm hiện tại; `year_from <= year_to` |
+| `num_papers` | số nguyên | 1–30, mặc định 10 |
+| `criteria` | string hoặc null | tiêu chí sàng lọc bổ sung, tối đa 1000 ký tự |
+| `language` | `"vi"` hoặc `"en"` | ngôn ngữ phần `reason` của từng bài, mặc định `"vi"` |
 
 ```json
 { "topic": "machine learning for medical image diagnosis", "num_papers": 8, "language": "en" }
 ```
 
-Response (excerpt of [`demo/sample_result.json`](../demo/sample_result.json), a real run; long values shortened):
+Response (trích từ [`demo/sample_result.json`](../demo/sample_result.json), một lần chạy thật; các giá trị dài đã rút gọn):
 
 ```json
 {
@@ -138,52 +137,52 @@ Response (excerpt of [`demo/sample_result.json`](../demo/sample_result.json), a 
 }
 ```
 
-(The sample was recorded before the wording of `message` was changed for runs that exceed the target; such a
-run now says "Target met: 16 Relevant papers found (target 8) ...". Do not parse `message`; use `status`.)
+(File mẫu được ghi trước khi đổi cách diễn đạt trường `message` cho trường hợp vượt mục tiêu; hiện nay một lần chạy như
+vậy sẽ ghi "Đã tìm đủ: 16 bài Relevant (mục tiêu 8) ...". Không nên phân tích `message` bằng code; hãy dùng `status`.)
 
-`status` is computed by code, not by the model:
+`status` do code tính, không phải do model:
 
-| `status` | Meaning |
+| `status` | Ý nghĩa |
 |---|---|
-| `completed` | number of Relevant papers >= `num_papers` |
-| `partial` | fewer Relevant papers than requested, but at least one search succeeded (`message` says the real `X/Y`) |
-| `error` | no search succeeded, or Gemini failed and could not recover (see `errors`, `terminated_by`) |
+| `completed` | số bài Relevant >= `num_papers` |
+| `partial` | ít bài Relevant hơn yêu cầu nhưng ít nhất một lượt tìm thành công (`message` nêu số thực tế `X/Y`) |
+| `error` | không lượt tìm nào thành công, hoặc Gemini lỗi không phục hồi được (xem `errors`, `terminated_by`) |
 
-**`completed`, `partial` and `error` are all returned with HTTP 200; the status is always inside the JSON.**
-`selected` holds all Relevant papers, then Possibly Relevant ones, in discovery order, cut at `num_papers`.
-`label_counts` counts every labelled paper, including Not Relevant and Insufficient Information.
-`terminated_by` is one of `model_finish`, `model_text_stop`, `step_cap`, `budget`, `llm_error`.
+**Cả ba trạng thái `completed`, `partial`, `error` đều trả HTTP 200; trạng thái luôn nằm trong JSON.**
+`selected` gồm toàn bộ bài Relevant, sau đó đến Possibly Relevant, theo thứ tự phát hiện, cắt ở `num_papers`.
+`label_counts` đếm mọi bài đã gắn nhãn, kể cả Not Relevant và Insufficient Information.
+`terminated_by` là một trong `model_finish`, `model_text_stop`, `step_cap`, `budget`, `llm_error`.
 
-Other HTTP codes: `422` invalid input (`{"detail": "Invalid request: ...", "errors": [{"field", "message"}]}`),
-`429` the server is busy with another run (waited 90 s), `503` the server is missing required configuration
-(the message names the missing variables), `500` unexpected error (no internal details).
+Các mã HTTP khác: `422` input sai (`{"detail": "Invalid request: ...", "errors": [{"field", "message"}]}`),
+`429` server đang bận chạy yêu cầu khác (đã chờ 90 giây), `503` server thiếu cấu hình bắt buộc (thông báo nêu tên
+biến còn thiếu), `500` lỗi không lường trước (không lộ chi tiết nội bộ).
 
-**Timeouts:** a run usually takes 1-2 minutes (screening 25 papers can take 15-30 s of Gemini time). The frontend
-must use a client timeout of at least 3 minutes and show a waiting state.
+**Timeout:** một lần chạy thường mất 1–2 phút (Gemini có thể mất 15–30 giây để sàng lọc 25 bài). Frontend phải đặt
+timeout phía client ít nhất 3 phút và hiển thị trạng thái chờ.
 
 ### `GET /api/runs/{run_id}`
 
-Returns the saved `result.json` for a run, including `tool_history` for the Agent Activity screen. `404` if unknown.
+Trả lại `result.json` đã lưu của lần chạy, gồm cả `tool_history` cho màn hình Agent Activity. `404` nếu không tồn tại.
 
 ### `GET /api/exports/{run_id}`
 
-Returns the CSV of `selected` (`text/csv`, UTF-8 with BOM so Excel reads Vietnamese correctly, filename
-`paperscout_{run_id}.csv`; columns Title, Authors, Year, DOI, Source URL, Abstract, Relevance, Relevance Reason).
-`404` if unknown. `run_id` must match `^[a-f0-9]{12}$`; anything else is rejected (`422`, or `404` when the value
-contains path separators and so does not match the route), which prevents path traversal.
-The same CSV for the sample run is in [`demo/sample_results.csv`](../demo/sample_results.csv).
+Trả file CSV của `selected` (`text/csv`, UTF-8 có BOM để Excel đọc đúng tiếng Việt, tên file
+`paperscout_{run_id}.csv`; các cột Title, Authors, Year, DOI, Source URL, Abstract, Relevance, Relevance Reason).
+`404` nếu không tồn tại. `run_id` phải khớp `^[a-f0-9]{12}$`; giá trị khác bị từ chối (`422`, hoặc `404` khi giá trị
+chứa dấu phân cách đường dẫn nên không khớp route), nhờ đó chống được path traversal.
+File CSV tương ứng của lần chạy mẫu nằm ở [`demo/sample_results.csv`](../demo/sample_results.csv).
 
 ### `GET /health`
 
 `{"status": "ok", "model": "...", "gemini_key_configured": true, "openalex_key_configured": true}`.
 
-## 3. Testing
+## 3. Kiểm thử
 
 ```bash
-pytest                       # default: offline, uses FakeLLM / FakeOpenAlex and synthetic fixtures
+pytest                       # mặc định: offline, dùng FakeLLM / FakeOpenAlex và fixture tổng hợp
 ```
 
-The live smoke test (`tests/test_live_smoke.py`) calls the real APIs and uses quota. It needs real keys in `.env`:
+Test live (`tests/test_live_smoke.py`) gọi API thật và tốn quota; cần key thật trong `.env`:
 
 ```powershell
 # Windows PowerShell
@@ -194,123 +193,140 @@ $env:RUN_LIVE = "1"; pytest -m live
 RUN_LIVE=1 pytest -m live
 ```
 
-Test files: `test_agent.py` (agent loop, state, tool registry, run logger, Gemini client), `test_tools.py`
-(OpenAlex client, search, processing, CSV export), `test_api.py` (FastAPI). Smaller extras: `test_config.py`,
+Các file test: `test_agent.py` (vòng lặp agent, state, tool registry, run logger, client Gemini), `test_tools.py`
+(client OpenAlex, tìm kiếm, xử lý dữ liệu, xuất CSV), `test_api.py` (FastAPI). Các file nhỏ khác: `test_config.py`,
 `test_schemas.py`, `test_structure.py`, `test_baseline.py`, `test_show_log.py`, `test_scan_secrets.py`,
-`test_live_smoke.py`. Shared fakes and fixtures: `conftest.py`, `fakes.py`, `fixtures/`.
+`test_live_smoke.py`. Đồ giả và dữ liệu dùng chung: `conftest.py`, `fakes.py`, `fixtures/`.
+Báo cáo kiểm thử `tests/test_report.md` do thành viên phụ trách bổ sung.
 
-## 4. Layout
+## 4. Cấu trúc repo
+
+Phần của backend (đã có đầy đủ) và các chỗ để trống cho thành viên khác:
 
 ```
-backend/
-  main.py              FastAPI app (create_app, dependencies)
-  config.py            settings from .env / environment, validated
-  requirements.txt     runtime dependencies, pinned     requirements-dev.txt   + pytest
+backend/               (backend: đã có)
+  main.py              ứng dụng FastAPI (create_app, dependencies)
+  config.py            cấu hình đọc từ .env / biến môi trường, có kiểm tra hợp lệ
+  requirements.txt     thư viện chạy, ghim phiên bản     requirements-dev.txt   thêm pytest
+  README.md            tài liệu này
   agent/
-    research_agent.py  run_research(): the agent loop and final result
-    instructions.py    system instruction, task message, loading the screening criteria
-    schemas.py         Pydantic models (request, metadata, assessment, result)
-    state.py           per-run state: paper registry, assessments, budget
-    llm.py             Gemini client (throttling, retry/backoff), LLMClient protocol
-    tool_registry.py   the 4 tool declarations, validation, dispatch, error codes
-    run_logger.py      JSONL logger with secret redaction
+    research_agent.py  run_research(): vòng lặp agent và kết quả cuối
+    instructions.py    system instruction, task message, nạp tiêu chí sàng lọc
+    schemas.py         các model Pydantic (request, metadata, đánh giá, kết quả)
+    state.py           trạng thái mỗi lần chạy: registry bài báo, nhãn, ngân sách
+    llm.py             client Gemini (giãn cách gọi, retry/backoff), giao diện LLMClient
+    tool_registry.py   khai báo 4 tool, kiểm tra tham số, điều phối, mã lỗi
+    run_logger.py      logger JSONL có che secret
   tools/
-    search.py          OpenAlex client and the search / related-works operations
-    processing.py      normalize, filter by year, de-duplicate
-    export.py          CSV export
-scripts/               helper scripts, run from the repo root (see below)
-demo/                  logs/ (3 real demo runs), sample_result.json, sample_results.csv
-tests/                 offline test-suite
+    search.py          client OpenAlex và các thao tác tìm kiếm / bài liên quan
+    processing.py      chuẩn hoá, lọc theo năm, loại trùng
+    export.py          xuất CSV
+scripts/               các script hỗ trợ, chạy từ thư mục gốc repo (xem bảng bên dưới)
+tests/                 bộ test offline (test_report.md: để trống, thành viên khác thêm)
+demo/
+  logs/                log của 3 lần demo thật
+  sample_result.json   kết quả mẫu (JSON)
+  sample_results.csv   kết quả mẫu (CSV)
+  screenshots/         để trống: ảnh chụp màn hình, thành viên khác thêm
+  (demo_video_link.md: thành viên khác thêm)
+evaluation/            để trống: research_queries.csv, evaluation_results.csv, screening_criteria.md
+                       (do thành viên phụ trách đánh giá thêm; bản nháp tiêu chí chưa đưa vào repo)
+frontend/              để trống: giao diện website, thành viên khác thêm
+docs/                  để trống: tài liệu, thành viên khác thêm
+.env.example  .gitignore  pytest.ini
+(README.md ở gốc repo: để trống, thành viên khác thêm)
 ```
 
-Scripts:
+Các script:
 
-| Script | Purpose | Uses API quota |
+| Script | Mục đích | Tốn quota API |
 |---|---|---|
-| `scripts/list_models.py` | list Gemini models that support `generateContent` | no cost to speak of |
-| `scripts/check_connection.py` | Gemini smoke test (text + function calling) | 2 tiny requests |
-| `scripts/check_openalex.py` | OpenAlex smoke test (search + related works) | 1 search |
-| `scripts/live_demo.py` | 3 real requests; writes `demo/logs/` and `demo/results/` | yes |
-| `scripts/show_log.py` | print a readable timeline of a run log | no |
-| `scripts/baseline_script.py` | non-agent baseline (fixed keywords, always 3 searches) for comparison | yes |
-| `scripts/scan_secrets.py` | scan files/history for leaked secrets (never prints values) | no |
-| `scripts/check_env_example.py` | compare variable names in `config.py` and `.env.example` | no |
-| `scripts/verify_clean_clone.py` | clone the repo to a temp dir, install, test and smoke-start the server | no |
+| `scripts/list_models.py` | liệt kê model Gemini hỗ trợ `generateContent` | gần như không |
+| `scripts/check_connection.py` | kiểm tra nhanh Gemini (văn bản + function calling) | 2 request nhỏ |
+| `scripts/check_openalex.py` | kiểm tra nhanh OpenAlex (tìm kiếm + bài liên quan) | 1 lượt tìm |
+| `scripts/live_demo.py` | chạy 3 request thật; ghi `demo/logs/` và `demo/results/` | có |
+| `scripts/show_log.py` | in timeline dễ đọc của một file log | không |
+| `scripts/baseline_script.py` | bản đối chứng không phải agent (từ khoá cố định, luôn 3 lượt tìm) | có |
+| `scripts/scan_secrets.py` | quét file/lịch sử git tìm secret bị lộ (không in giá trị) | không |
+| `scripts/check_env_example.py` | so tên biến trong `config.py` với `.env.example` | không |
+| `scripts/verify_clean_clone.py` | clone repo vào thư mục tạm, cài đặt, chạy test và thử khởi động server | không |
 
-`python scripts/show_log.py demo/logs/e29b2bbd33a4.jsonl` shows the timeline of the sample run.
+`python scripts/show_log.py demo/logs/e29b2bbd33a4.jsonl` hiển thị timeline của lần chạy mẫu.
 
-## 5. How the agent loop works
+## 5. Vòng lặp agent hoạt động thế nào
 
 ```
 state = RunState(request); contents = [task message]
 for step in 1..MAX_MODEL_STEPS:
-    response = gemini.generate(contents, tools, system_instruction)     # throttled, retried on 429/503
-    contents.append(response.content)       # the model's own Content object, unchanged (keeps thought signatures)
-    for each function call (parallel calls allowed, handled in order):
-        result = registry.dispatch(call, state)       # validate -> execute -> catch errors -> log
-    contents.append(user Content: one function_response per call, same order)
-    stop when finish_research is accepted, or the budget is spent and every paper is screened
-result = build_result(state)      # status and metadata computed by code from the registry
+    response = gemini.generate(contents, tools, system_instruction)     # giãn cách gọi, retry khi 429/503
+    contents.append(response.content)       # giữ NGUYÊN đối tượng Content của model (giữ thought signature)
+    for each function call (cho phép gọi song song, xử lý lần lượt):
+        result = registry.dispatch(call, state)       # kiểm tra -> thực thi -> bắt lỗi -> ghi log
+    contents.append(user Content: mỗi lời gọi một function_response, cùng thứ tự)
+    dừng khi finish_research được chấp nhận, hoặc hết ngân sách và mọi bài đã được sàng lọc
+result = build_result(state)      # trạng thái và metadata do code tính từ registry
 ```
 
-Tools (manual function calling; automatic function calling is disabled, mode AUTO). Every tool takes a
-`rationale` (why this step, based on earlier results), which is logged and shown in `tool_history`.
+Tool (gọi function thủ công; tắt automatic function calling, chế độ AUTO). Mọi tool đều có tham số `rationale`
+(vì sao chọn bước này, dựa trên kết quả trước), được ghi log và hiển thị trong `tool_history`.
 
-| Tool | Cost | Notes |
+| Tool | Chi phí | Ghi chú |
 |---|---|---|
-| `search_papers(query, rationale, year_from?, year_to?, limit?)` | 1 search | years are clamped to the request's range; only papers not seen before are returned |
-| `find_related_papers(seed_paper_id, rationale, limit?)` | 1 search | the seed must be labelled Relevant or Possibly Relevant; uses OpenAlex `related_works` |
-| `record_screening(assessments, rationale)` | free | per-item validation; bad items are rejected, good ones recorded; relabelling allowed |
-| `finish_research(reason)` | free | rejected while papers are unscreened; the first early finish must be confirmed |
+| `search_papers(query, rationale, year_from?, year_to?, limit?)` | 1 lượt tìm | năm bị kẹp về khoảng của request; chỉ trả về bài chưa thấy |
+| `find_related_papers(seed_paper_id, rationale, limit?)` | 1 lượt tìm | bài hạt giống phải đang được gắn Relevant hoặc Possibly Relevant; dùng `related_works` của OpenAlex |
+| `record_screening(assessments, rationale)` | miễn phí | kiểm tra từng mục; mục sai bị từ chối, mục đúng vẫn được ghi; cho phép gắn nhãn lại |
+| `finish_research(reason)` | miễn phí | bị từ chối khi còn bài chưa sàng lọc; lần kết thúc sớm đầu tiên phải xác nhận |
 
-Error codes returned to the model: `SEARCH_BUDGET_EXHAUSTED`, `UNKNOWN_TOOL`, `INVALID_ARGS`, `EMPTY_QUERY`,
+Mã lỗi trả cho model: `SEARCH_BUDGET_EXHAUSTED`, `UNKNOWN_TOOL`, `INVALID_ARGS`, `EMPTY_QUERY`,
 `UNKNOWN_PAPER_ID`, `INVALID_LABEL`, `SEED_NOT_ELIGIBLE`, `UNSCREENED_PAPERS_REMAIN`, `PREMATURE_FINISH_CONFIRM`,
-`OPENALEX_AUTH`, `OPENALEX_RATE_LIMIT`, `OPENALEX_HTTP`, `OPENALEX_TIMEOUT`, and `INTERNAL_ERROR` for an unexpected
-exception inside a tool.
+`OPENALEX_AUTH`, `OPENALEX_RATE_LIMIT`, `OPENALEX_HTTP`, `OPENALEX_TIMEOUT`, và `INTERNAL_ERROR` cho exception
+bất ngờ bên trong tool.
 
-Titles and abstracts are treated as untrusted data; the system instruction tells the model to ignore any
-instructions found inside them. Screening criteria come from `CRITERIA_PATH` on every run (change the file, change
-the behaviour); if the file is missing, a built-in default is used and a warning is logged.
+Tên bài và abstract được coi là dữ liệu không đáng tin; system instruction dặn model bỏ qua mọi chỉ dẫn nằm trong đó.
+Tiêu chí sàng lọc được đọc từ `CRITERIA_PATH` ở mỗi lần chạy (đổi file là đổi hành vi); nếu thiếu file thì dùng bản
+tiêu chí dựng sẵn và ghi cảnh báo vào log.
 
-Each run writes `logs/{run_id}.jsonl`, one event per line: `run_started`, `model_request`, `model_response`,
-`tool_call`, `tool_result`, `guard` (budget refused, unknown tool, bad arguments, invented id, early finish, year
-clamped), `run_finished`.
+Mỗi lần chạy ghi `logs/{run_id}.jsonl`, mỗi dòng một sự kiện: `run_started`, `model_request`, `model_response`,
+`tool_call`, `tool_result`, `guard` (từ chối do ngân sách, tool lạ, tham số sai, id bịa, kết thúc sớm, năm bị kẹp),
+`run_finished`.
 
-## 6. Deploying on Render
+## 6. Triển khai trên Render
 
-- Build command: `pip install -r backend/requirements.txt`
-- Start command: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-- `PYTHON_VERSION`: set it to a 3.10.x release (the version this backend was tested on; 3.11 was not tested).
-- Health check path: `/health`
-- Environment variables to declare in the Render dashboard: `GEMINI_API_KEY`, `GEMINI_MODEL`, `OPENALEX_API_KEY`,
-  `ALLOWED_ORIGINS` (the deployed frontend origin, e.g. `https://your-site.example`); optional: `GEMINI_TEMPERATURE`,
-  `GEMINI_MIN_INTERVAL_SECONDS`, `MAX_SEARCHES`, `MAX_MODEL_STEPS`, `SEARCH_PAGE_SIZE`, `ABSTRACT_CHARS_FOR_MODEL`,
-  `MAX_CONCURRENT_RUNS`, `LOG_DIR`, `RUNS_DIR`, `CRITERIA_PATH`.
-- The disk is ephemeral: `runs/` and `logs/` are lost on restart or redeploy, so `GET /api/runs/{id}` and
-  `GET /api/exports/{id}` only work for recent runs. Free instances also sleep when idle (the first request after
-  a pause is slow).
+- Lệnh build: `pip install -r backend/requirements.txt`
+- Lệnh khởi động: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+- `PYTHON_VERSION`: đặt một bản 3.10.x (phiên bản backend này đã được kiểm tra; chưa thử trên 3.11).
+- Đường dẫn health check: `/health`
+- Biến môi trường cần khai báo trên Render: `GEMINI_API_KEY`, `GEMINI_MODEL`, `OPENALEX_API_KEY`,
+  `ALLOWED_ORIGINS` (origin của frontend đã deploy, ví dụ `https://ten-trang-web.example`); tuỳ chọn:
+  `GEMINI_TEMPERATURE`, `GEMINI_MIN_INTERVAL_SECONDS`, `MAX_SEARCHES`, `MAX_MODEL_STEPS`, `SEARCH_PAGE_SIZE`,
+  `ABSTRACT_CHARS_FOR_MODEL`, `MAX_CONCURRENT_RUNS`, `LOG_DIR`, `RUNS_DIR`, `CRITERIA_PATH`.
+- Đĩa là tạm thời: `runs/` và `logs/` mất khi khởi động lại hoặc deploy lại, nên `GET /api/runs/{id}` và
+  `GET /api/exports/{id}` chỉ dùng được cho các lần chạy gần đây. Máy chủ gói miễn phí cũng ngủ khi nhàn rỗi
+  (request đầu tiên sau khoảng nghỉ sẽ chậm).
 
-## 7. Known limits
+## 7. Giới hạn đã biết
 
-- Tested with Python 3.10.0 only.
-- A run takes about 1-2 minutes; the endpoint is synchronous, and with `MAX_CONCURRENT_RUNS=1` a second user waits
-  (up to 90 s) or gets HTTP 429.
-- Relevance labels are Gemini's judgement from title and abstract. There is no reference evaluation set yet, so
-  label quality has not been measured.
-- The rule "a paper without an abstract can never be Relevant" is only in the prompt and the screening criteria;
-  the code does not enforce it. (In the three demo runs no Relevant paper lacked an abstract.)
-- Free-tier quotas: Gemini limits depend on the model and key (on 429/503 the client backs off 4, 8, 16 s, at most
-  3 retries, then the run ends with `status: "error"`); OpenAlex's free key gives a small daily budget (about
-  USD 1/day; a keyword search costs about USD 0.001).
-- `scripts/baseline_script.py` (the non-agent comparison) is covered by offline tests but has not been run against
-  the real APIs yet, so there are no baseline results in `demo/`.
-- `demo/logs/` holds the three real demo runs: popular topic (`e29b2bbd33a4`), narrow topic (`398069570191`) and
-  tight year range (`f06d72185141`).
-- `evaluation/screening_criteria.md` is a draft owned by the evaluation member and is not part of this repository
-  snapshot; without it the built-in default criteria are used.
+- Chỉ mới kiểm tra với Python 3.10.0.
+- Một lần chạy mất khoảng 1–2 phút; endpoint chạy đồng bộ, và với `MAX_CONCURRENT_RUNS=1` người dùng thứ hai phải chờ
+  (tối đa 90 giây) hoặc nhận HTTP 429.
+- Nhãn mức độ liên quan là phán đoán của Gemini dựa trên tên bài và abstract. Chưa có bộ đánh giá đối chiếu nên chất
+  lượng nhãn chưa được đo.
+- Quy tắc "bài không có abstract thì không bao giờ được gắn Relevant" chỉ nằm trong prompt và tiêu chí sàng lọc,
+  code chưa ép cứng. (Trong 3 lần demo không có bài Relevant nào thiếu abstract.)
+- Quota gói miễn phí: giới hạn của Gemini phụ thuộc model và key. Khi gặp 429/503, client chờ 4, 8, 16 giây và thử lại
+  tối đa 3 lần, sau đó lần chạy kết thúc với `status: "error"`; key OpenAlex miễn phí có ngân sách nhỏ mỗi ngày
+  (khoảng 1 USD/ngày; một lượt tìm từ khoá tốn khoảng 0,001 USD). Khi chạy demo nhiều lần trong một ngày, Gemini đã
+  trả 503 (quá tải) rồi 429 (hết quota).
+- `scripts/baseline_script.py` (bản đối chứng không phải agent) đã có test offline và đã thử chạy với API thật, nhưng
+  bị Gemini ngắt giữa chừng (503, sau đó 429) nên **chưa có kết quả baseline hoàn chỉnh** trong `demo/`.
+  Script không lưu kết quả của lần chạy bị ngắt; hãy chạy lại khi quota đã hồi.
+- `demo/logs/` chứa log 3 lần chạy demo thật: chủ đề phổ biến (`e29b2bbd33a4`), chủ đề hẹp (`398069570191`) và
+  khoảng năm chặt (`f06d72185141`).
+- `evaluation/screening_criteria.md` là bản nháp do thành viên phụ trách đánh giá quản lý và không nằm trong bản repo
+  này; khi thiếu file, backend dùng tiêu chí dựng sẵn.
 
-## 8. Sources
+## 8. Nguồn tham khảo
 
-The code was written from scratch against the current Gemini function-calling documentation and the OpenAlex API
-documentation (API key authentication, `search`, `select`, `related_works`). The reference repository
-`academic-online-research-agent` was not used and no code was copied from it.
+Code được viết từ đầu dựa trên tài liệu hiện hành của Gemini function calling và của OpenAlex API (xác thực bằng API key,
+`search`, `select`, `related_works`). Repo tham khảo `academic-online-research-agent` không được sử dụng và không có
+đoạn code nào được chép từ đó.
