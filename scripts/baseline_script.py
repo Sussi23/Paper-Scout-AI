@@ -166,7 +166,7 @@ def main() -> int:
         print(exc)
         return 2
     keywords = json.loads((ROOT / "scripts" / "baseline_keywords.json").read_text(encoding="utf-8"))
-    settings = settings.model_copy(update={"log_dir": ROOT / "demo" / "logs"})
+    settings = settings.model_copy(update={"log_dir": ROOT / "demo" / "baseline" / "logs"})  # keep demo/logs = agent runs only
     out_dir = ROOT / "demo" / "baseline"
     out_dir.mkdir(parents=True, exist_ok=True)
     llm = GeminiClient(
@@ -175,6 +175,7 @@ def main() -> int:
     )
     backend = OpenAlexClient(settings.openalex_key() or "")
     chosen = sys.argv[1].split(",") if len(sys.argv) > 1 else list(REQUESTS)
+    incomplete: List[str] = []
     try:
         for key in chosen:
             if key not in REQUESTS:
@@ -183,6 +184,10 @@ def main() -> int:
             name, request = REQUESTS[key]
             print(f"[{key}] BASELINE {name}: queries={keywords[name]}")
             result = run_baseline(request, keywords[name], llm=llm, search_backend=backend, settings=settings)
+            if result.terminated_by == "llm_error":  # screening was cut off: the numbers would be misleading
+                incomplete.append(name)
+                print(f">>> INCOMPLETE: Gemini failed ({result.errors[-1][:150]}). Nothing saved; try again later.\n")
+                continue
             (out_dir / f"{name}.json").write_text(
                 json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8")
             export_csv(result, out_dir / f"{name}.csv")
@@ -193,6 +198,9 @@ def main() -> int:
             print()
     finally:
         backend.close()
+    if incomplete:
+        print(f"Incomplete (not saved): {', '.join(incomplete)}")
+        return 1
     return 0
 
 

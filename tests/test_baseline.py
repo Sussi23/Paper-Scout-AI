@@ -58,3 +58,12 @@ def test_compare_lines(settings):
              "searches_used": 1, "queries": ["adaptive learning"]}
     text = "\n".join(compare(agent, result))
     assert "AGENT" in text and "BASELINE" in text and "selected in common" in text
+
+
+def test_gemini_failure_marks_run_as_llm_error_not_partial_data(settings):
+    from backend.agent.llm import LLMError
+
+    llm = FakeLLM([LLMError("LLM_UNAVAILABLE", "Gemini HTTP 503: high demand")])
+    result = run_baseline(req(), QUERIES, llm=llm, search_backend=FakeOpenAlex(), settings=settings)
+    assert result.terminated_by == "llm_error" and result.status == "error"
+    assert result.searches_used == 3 and result.errors
