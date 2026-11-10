@@ -1,0 +1,18 @@
+{
+  "_note": "Fixed keyword lists for the NON-agent baseline: exactly 3 queries per request, chosen by a human (edit freely).",
+  "popular_topic": [
+    "machine learning medical image diagnosis",
+    "deep learning medical imaging classification",
+    "convolutional neural network radiology diagnosis"
+  ],
+  "narrow_topic": [
+    "3D laser scanning Cham temples",
+    "Cham heritage conservation Vietnam",
+    "My Son temple 3D documentation"
+  ],
+  "tight_years": [
+    "large language models education",
+    "ChatGPT higher education",
+    "generative AI teaching and learning"
+  ]
+}
