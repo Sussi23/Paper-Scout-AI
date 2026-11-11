@@ -11,14 +11,13 @@ Nguyên tắc cốt lõi: **không bịa dữ liệu**. Tên bài, tác giả, n
 ## Mục lục
 
 1. [Hệ thống hoạt động thế nào](#1-hệ-thống-hoạt-động-thế-nào)
-2. [Trạng thái và các phần còn trống](#2-trạng-thái-và-các-phần-còn-trống)
-3. [Bản đồ thư mục: muốn làm gì thì mở file nào](#3-bản-đồ-thư-mục-muốn-làm-gì-thì-mở-file-nào)
-4. [Chạy thử backend trong 5 phút](#4-chạy-thử-backend-trong-5-phút)
-5. [Hợp đồng API](#5-hợp-đồng-api)
-6. [Quy tắc làm việc chung](#6-quy-tắc-làm-việc-chung)
-7. [Việc cần làm theo từng người](#7-việc-cần-làm-theo-từng-người)
-8. [Giới hạn đã biết](#8-giới-hạn-đã-biết)
-9. [Nguồn tham khảo](#9-nguồn-tham-khảo)
+2. [Bản đồ thư mục: muốn làm gì thì mở file nào](#2-bản-đồ-thư-mục-muốn-làm-gì-thì-mở-file-nào)
+3. [Chạy thử backend trong 5 phút](#3-chạy-thử-backend-trong-5-phút)
+4. [Hợp đồng API](#4-hợp-đồng-api)
+5. [Quy tắc làm việc chung](#5-quy-tắc-làm-việc-chung)
+6. [Việc cần làm theo từng người](#6-việc-cần-làm-theo-từng-người)
+7. [Giới hạn đã biết](#7-giới-hạn-đã-biết)
+8. [Nguồn tham khảo](#8-nguồn-tham-khảo)
 
 ---
 
