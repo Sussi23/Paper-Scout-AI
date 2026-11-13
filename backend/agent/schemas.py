@@ -108,6 +108,33 @@ class SelectedPaper(BaseModel):
     reason: str
 
 
+class StepMetrics(BaseModel):
+    """Numbers for one tool call, for the UI. Computed by code; never sent to the model.
+
+    Search fields are set only for successful search_papers / find_related_papers calls, screening fields
+    only for record_screening; the state snapshot (taken AFTER the step) is present for every call.
+    """
+
+    # search_papers / find_related_papers only
+    returned: Optional[int] = None
+    new_papers: Optional[int] = None
+    dropped_year: Optional[int] = None
+    dropped_duplicate: Optional[int] = None
+    dropped_invalid: Optional[int] = None
+    # record_screening only
+    accepted: Optional[int] = None
+    rejected: Optional[int] = None
+    relabeled: Optional[int] = None
+    labels_this_step: Optional[Dict[str, int]] = None
+    # snapshot of the run state after this step (every step)
+    papers_found: int = 0
+    screened: int = 0
+    unscreened: int = 0
+    relevant: int = 0
+    possibly_relevant: int = 0
+    searches_used: int = 0
+
+
 class ToolCallLog(BaseModel):
     """One tool call as shown on the Agent Activity screen."""
 
@@ -120,6 +147,38 @@ class ToolCallLog(BaseModel):
     summary: str = ""
     latency_ms: int = 0
     timestamp: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+    metrics: Optional[StepMetrics] = None  # None in results saved before this field existed
+
+
+class ScreenedPaper(BaseModel):
+    """Every paper found in the run (bibliographic data from the registry; label/reason from the model)."""
+
+    paper_id: str
+    title: str
+    authors: List[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    doi: Optional[str] = None
+    source_url: str
+    has_abstract: bool = False
+    label: Optional[RelevanceLabel] = None  # None = not screened
+    reason: Optional[str] = None
+    selected: bool = False
+    found_at_step: int = 0
+    found_by_tool: str = ""
+    found_via: str = ""  # the search query, or "related:<seed_id>"
+
+
+class Funnel(BaseModel):
+    """Totals over successful searches. Invariant:
+    returned == dropped_invalid + dropped_year + dropped_duplicate + unique_found."""
+
+    returned: int = 0
+    dropped_invalid: int = 0
+    dropped_year: int = 0
+    dropped_duplicate: int = 0
+    unique_found: int = 0
+    screened: int = 0
+    selected: int = 0
 
 
 class ResearchResult(BaseModel):
@@ -140,3 +199,6 @@ class ResearchResult(BaseModel):
     model: str = ""
     started_at: dt.datetime
     finished_at: dt.datetime
+    # added later; results saved before these existed still validate with the defaults
+    screened_papers: List[ScreenedPaper] = Field(default_factory=list)
+    funnel: Optional[Funnel] = None

@@ -1,7 +1,7 @@
 """Verify that a clean clone of the repository installs, passes its tests and starts without a .env file.
 
 Usage (from anywhere inside the repo, any OS):
-    python scripts/verify_clean_clone.py [--branch backend] [--expect-passed 109]
+    python scripts/verify_clean_clone.py [--branch backend] [--expect-passed 124]
 
 Steps: clone the branch into a temp dir OUTSIDE the repo -> create a venv -> install
 backend/requirements-dev.txt -> run pytest with every GEMINI_*/OPENALEX_* variable removed ->
@@ -166,7 +166,7 @@ def verify(branch: str, expect_passed: int) -> int:
 
 
 def main(argv: List[str]) -> int:
-    branch, expect = "backend", 109
+    branch, expect = "backend", 124
     for i, arg in enumerate(argv):
         if arg == "--branch":
             branch = argv[i + 1]

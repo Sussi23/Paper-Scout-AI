@@ -13,7 +13,16 @@ from backend.agent.schemas import (
     ToolCallLog,
 )
 from backend.config import Settings
-from backend.tools.processing import SeenIndex
+from backend.tools.processing import FilterStats, SeenIndex
+
+
+@dataclass(frozen=True)
+class PaperOrigin:
+    """Where a paper was first found: the step, the tool and the query (or `related:<seed>`)."""
+
+    step: int = 0
+    tool: str = ""
+    via: str = ""
 
 
 @dataclass
@@ -37,6 +46,8 @@ class RunState:
     text_nudged: bool = False
     terminated_by: str = ""
     started_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+    origins: Dict[str, PaperOrigin] = field(default_factory=dict)
+    search_totals: FilterStats = field(default_factory=FilterStats)  # funnel counters, successful searches only
 
     # -- budget ---------------------------------------------------------------------------
     @property
@@ -44,9 +55,32 @@ class RunState:
         return max(0, self.settings.max_searches - self.searches_used)
 
     # -- registry / screening -------------------------------------------------------------
-    def register(self, papers: List[PaperMetadata]) -> None:
+    def register(self, papers: List[PaperMetadata], step: int = 0, tool: str = "", via: str = "") -> None:
+        """Add new papers to the registry; the first finding of each paper keeps its origin."""
         for paper in papers:
-            self.registry.setdefault(paper.paper_id, paper)
+            if paper.paper_id not in self.registry:
+                self.registry[paper.paper_id] = paper
+                self.origins[paper.paper_id] = PaperOrigin(step=step, tool=tool, via=via)
+
+    def add_search_stats(self, stats: FilterStats) -> None:
+        """Accumulate one successful search's filter counts into the funnel totals."""
+        totals = self.search_totals
+        totals.returned += stats.returned
+        totals.dropped_year += stats.dropped_year
+        totals.dropped_duplicate += stats.dropped_duplicate
+        totals.dropped_invalid += stats.dropped_invalid
+
+    def snapshot(self) -> Dict[str, int]:
+        """State counters after a step (for StepMetrics)."""
+        screened = sum(1 for pid in self.registry if pid in self.assessments)
+        return {
+            "papers_found": len(self.registry),
+            "screened": screened,
+            "unscreened": len(self.registry) - screened,
+            "relevant": len(self.ids_with_label(RelevanceLabel.RELEVANT)),
+            "possibly_relevant": len(self.ids_with_label(RelevanceLabel.POSSIBLY_RELEVANT)),
+            "searches_used": self.searches_used,
+        }
 
     def ids_with_label(self, label: RelevanceLabel) -> List[str]:
         """Paper ids carrying `label`, in discovery order."""

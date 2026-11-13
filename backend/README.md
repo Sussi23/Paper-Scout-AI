@@ -160,9 +160,79 @@ biến còn thiếu), `500` lỗi không lường trước (không lộ chi ti�
 **Timeout:** một lần chạy thường mất 1–2 phút (Gemini có thể mất 15–30 giây để sàng lọc 25 bài). Frontend phải đặt
 timeout phía client ít nhất 3 phút và hiển thị trạng thái chờ.
 
+### Trường bổ sung cho giao diện: `metrics`, `screened_papers`, `funnel`
+
+Ba trường này được **thêm sau** để giao diện thể hiện rõ hoạt động của agent. Không trường cũ nào bị đổi tên, xoá hay
+đổi kiểu. Kết quả lưu trước khi có các trường này (ví dụ `demo/sample_result.json`) **không có** chúng: khi đọc lại,
+`metrics` là `null`, `screened_papers` là `[]`, `funnel` là `null`, nên giao diện phải chấp nhận các giá trị đó.
+Mọi con số đều do code tính, không gửi cho model và không lấy từ model.
+
+**`tool_history[].metrics`** (đối tượng `StepMetrics`, có ở mọi bước của kết quả mới):
+
+| Trường | Có khi nào | Ý nghĩa |
+|---|---|---|
+| `returned`, `new_papers`, `dropped_year`, `dropped_duplicate`, `dropped_invalid` | chỉ bước `search_papers` / `find_related_papers` thành công (bước khác: `null`) | số bản ghi OpenAlex trả về, số bài mới, số bị loại vì năm, vì trùng, vì thiếu dữ liệu |
+| `accepted`, `rejected`, `relabeled` | chỉ bước `record_screening` | số mục được chấp nhận, bị từ chối, được gắn nhãn lại |
+| `labels_this_step` | chỉ bước `record_screening` | số mục được chấp nhận theo từng nhãn trong lần gọi đó (đủ 4 khoá) |
+| `papers_found`, `screened`, `unscreened`, `relevant`, `possibly_relevant`, `searches_used` | **mọi bước**, kể cả bước bị từ chối hoặc lỗi | ảnh chụp trạng thái **sau** bước đó |
+
+**`screened_papers`**: mọi bài agent đã tìm thấy, theo thứ tự phát hiện (khác `selected` chỉ gồm bài được chọn).
+
+| Trường | Ý nghĩa |
+|---|---|
+| `paper_id`, `title`, `authors`, `year`, `doi`, `source_url` | lấy nguyên văn từ OpenAlex (không lấy từ model) |
+| `has_abstract` | bài có abstract hay không (abstract không đưa vào đây để kết quả nhẹ; xem `selected` hoặc CSV) |
+| `label`, `reason` | nhãn và lý do model gán; `null` nếu bài chưa được sàng lọc |
+| `selected` | `true` nếu `paper_id` có trong `selected_ids` |
+| `found_at_step`, `found_by_tool`, `found_via` | bước, công cụ và truy vấn đã tìm ra bài lần đầu; `found_via` là chuỗi truy vấn của `search_papers`, hoặc `related:<seed_id>` với `find_related_papers` |
+
+**`funnel`**: phễu tổng hợp qua các lượt tìm thành công: `returned`, `dropped_invalid`, `dropped_year`,
+`dropped_duplicate`, `unique_found`, `screened`, `selected`. Luôn đúng:
+`returned == dropped_invalid + dropped_year + dropped_duplicate + unique_found`.
+
+Ví dụ **minh hoạ** (dữ liệu giả từ fixture test, KHÔNG phải kết quả thật; đã rút gọn):
+
+```json
+{
+  "status": "completed",
+  "tool_history": [
+    { "step": 1, "tool": "search_papers", "status": "ok",
+      "metrics": { "returned": 8, "new_papers": 5, "dropped_year": 2, "dropped_duplicate": 0, "dropped_invalid": 1,
+                   "accepted": null, "rejected": null, "relabeled": null, "labels_this_step": null,
+                   "papers_found": 5, "screened": 0, "unscreened": 5, "relevant": 0, "possibly_relevant": 0,
+                   "searches_used": 1 } },
+    { "step": 2, "tool": "record_screening", "status": "ok",
+      "metrics": { "returned": null, "new_papers": null, "dropped_year": null, "dropped_duplicate": null,
+                   "dropped_invalid": null, "accepted": 5, "rejected": 0, "relabeled": 0,
+                   "labels_this_step": { "Relevant": 2, "Possibly Relevant": 1, "Not Relevant": 1,
+                                         "Insufficient Information": 1 },
+                   "papers_found": 5, "screened": 5, "unscreened": 0, "relevant": 2, "possibly_relevant": 1,
+                   "searches_used": 1 } }
+  ],
+  "screened_papers": [
+    { "paper_id": "W9000000001", "title": "Synthetic Study One on Adaptive Learning Systems",
+      "authors": ["Alice Example", "Bob Sample"], "year": 2021, "doi": "https://doi.org/10.5555/syn.0001",
+      "source_url": "https://doi.org/10.5555/syn.0001", "has_abstract": true, "label": "Relevant",
+      "reason": "Evaluates adaptive learning systems in schools.", "selected": true,
+      "found_at_step": 1, "found_by_tool": "search_papers", "found_via": "adaptive learning" },
+    { "paper_id": "W9000000004", "title": "Synthetic Study Four Without Abstract", "authors": ["Eve Placeholder"],
+      "year": 2023, "doi": null, "source_url": "https://example.org/syn/0004", "has_abstract": false,
+      "label": "Insufficient Information", "reason": "No abstract available.", "selected": false,
+      "found_at_step": 1, "found_by_tool": "search_papers", "found_via": "adaptive learning" }
+  ],
+  "funnel": { "returned": 8, "dropped_invalid": 1, "dropped_year": 2, "dropped_duplicate": 0,
+              "unique_found": 5, "screened": 5, "selected": 2 }
+}
+```
+
+Lưu ý cho giao diện: `tool_history[].args` của `record_screening` chứa toàn bộ danh sách đánh giá model gửi (có thể
+rất dài, hàng chục mục), nên **không nên hiển thị thô**; hãy dùng `metrics` và `screened_papers` thay thế.
+Schema đầy đủ của các trường này hiển thị tại `/docs` (mục `ResearchResult`, `StepMetrics`, `ScreenedPaper`, `Funnel`).
+
 ### `GET /api/runs/{run_id}`
 
 Trả lại `result.json` đã lưu của lần chạy, gồm cả `tool_history` cho màn hình Agent Activity. `404` nếu không tồn tại.
+Endpoint này trả nguyên file JSON đã lưu, nên kết quả cũ có thể thiếu `screened_papers`, `funnel` và `metrics`.
 
 ### `GET /api/exports/{run_id}`
 
@@ -320,6 +390,8 @@ Mỗi lần chạy ghi `logs/{run_id}.jsonl`, mỗi dòng một sự kiện: `ru
 - `scripts/baseline_script.py` (bản đối chứng không phải agent) đã có test offline và đã thử chạy với API thật, nhưng
   bị Gemini ngắt giữa chừng (503, sau đó 429) nên **chưa có kết quả baseline hoàn chỉnh** trong `demo/`.
   Script không lưu kết quả của lần chạy bị ngắt; hãy chạy lại khi quota đã hồi.
+- `demo/sample_result.json` và `demo/logs/` được tạo trước khi có `metrics`, `screened_papers`, `funnel`, nên không
+  chứa các trường này; cần chạy lại một yêu cầu thật để có mẫu đầy đủ.
 - `demo/logs/` chứa log 3 lần chạy demo thật: chủ đề phổ biến (`e29b2bbd33a4`), chủ đề hẹp (`398069570191`) và
   khoảng năm chặt (`f06d72185141`).
 - `evaluation/screening_criteria.md` là bản nháp do thành viên phụ trách đánh giá quản lý và không nằm trong bản repo

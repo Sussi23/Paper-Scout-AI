@@ -513,3 +513,149 @@ def test_no_tools_means_no_tool_config():
     client.generate([], [], "sys")
     cfg = stub.calls[0]["config"]
     assert cfg.tools is None and cfg.tool_config is None and cfg.system_instruction == "sys"
+
+
+# ----- step metrics, screened_papers, funnel (UI output; never sent to the model) -------------
+from pathlib import Path  # noqa: E402
+
+from backend.agent.schemas import ResearchResult  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+LABEL_ZERO = {"Relevant": 0, "Possibly Relevant": 0, "Not Relevant": 0, "Insufficient Information": 0}
+
+
+def test_metrics_search_step(settings):
+    result, llm, _, _ = run([SEARCH1], settings.model_copy(update={"max_model_steps": 1}))
+    m = result.tool_history[0].metrics
+    assert (m.returned, m.new_papers, m.dropped_invalid, m.dropped_year, m.dropped_duplicate) == (8, 5, 1, 2, 0)
+    assert (m.papers_found, m.screened, m.unscreened, m.relevant, m.searches_used) == (5, 0, 5, 0, 1)
+    assert m.accepted is None and m.labels_this_step is None
+
+
+def test_metrics_never_reach_the_model(settings):
+    script = [SEARCH1, screen_all("Relevant"), turn(fc("finish_research", reason="Done."))]
+    _, llm, _, _ = run(script, settings)
+    sent = [r for request in llm.requests[1:] for r in tool_responses(request)]
+    assert sent and all("metrics" not in r for r in sent)
+
+
+def test_metrics_screening_step(settings):
+    script = [
+        SEARCH1,
+        turn(fc("record_screening", rationale="Screen.", assessments=[
+            assess(W(1), "Relevant"), assess(W(2), "Relevant"), assess(W(3), "Not Relevant"),
+            assess("W9999999999", "Relevant", "Invented paper id."),
+        ])),
+        turn(fc("record_screening", rationale="Second look.", assessments=[assess(W(3), "Relevant")])),
+    ]
+    result, _, _, _ = run(script, settings.model_copy(update={"max_model_steps": 3}))
+    first, second = result.tool_history[1].metrics, result.tool_history[2].metrics
+    assert (first.accepted, first.rejected, first.relabeled) == (3, 1, 0)
+    assert first.labels_this_step == {**LABEL_ZERO, "Relevant": 2, "Not Relevant": 1}
+    assert (first.screened, first.unscreened, first.relevant, first.papers_found) == (3, 2, 2, 5)
+    assert (second.accepted, second.rejected, second.relabeled) == (1, 0, 1)
+    assert second.labels_this_step == {**LABEL_ZERO, "Relevant": 1}
+    assert (second.screened, second.relevant) == (3, 3)
+    assert first.returned is None and first.new_papers is None
+
+
+def test_metrics_on_rejected_step(settings):
+    queries = ["adaptive learning", "learning analytics", "virtual reality education", "fourth query"]
+    script = [turn(*[fc("search_papers", query=q, rationale=f"Try {q}.") for q in queries]), screen_all()]
+    result, _, _, _ = run(script, settings)
+    rejected = result.tool_history[3]
+    assert rejected.error_code == "SEARCH_BUDGET_EXHAUSTED"
+    m = rejected.metrics
+    assert m is not None
+    assert (m.returned, m.new_papers, m.dropped_year, m.dropped_duplicate, m.dropped_invalid) == (None,) * 5
+    assert m.accepted is None
+    assert (m.papers_found, m.searches_used, m.unscreened) == (10, 3, 10)  # 5 + 3 + 2 new papers
+
+
+def _assert_funnel_identity(f):
+    assert f.returned == f.dropped_invalid + f.dropped_year + f.dropped_duplicate + f.unique_found
+
+
+def test_funnel_identity(settings):
+    from scripts.baseline_script import run_baseline
+
+    script = [
+        turn(fc("search_papers", query="adaptive learning", rationale="Broad."),
+             fc("search_papers", query="learning analytics", rationale="Second angle.")),
+        screen_all("Relevant"),
+        turn(fc("finish_research", reason="Done.")),
+    ]
+    result, _, _, _ = run(script, settings)
+    f = result.funnel
+    assert f.returned == 14
+    assert (f.dropped_invalid, f.dropped_year, f.dropped_duplicate, f.unique_found) == (1, 2, 3, 8)
+    _assert_funnel_identity(f)
+    assert f.screened == 8 and f.selected == len(result.selected_ids) == 3
+
+    base = run_baseline(
+        req(), ["adaptive learning", "learning analytics", "virtual reality education"],
+        llm=FakeLLM([turn(text="[]")]), search_backend=FakeOpenAlex(), settings=settings,
+    )
+    _assert_funnel_identity(base.funnel)
+    assert base.funnel.returned == 17 and base.funnel.unique_found == 10
+    assert all(t.metrics is not None for t in base.tool_history)
+    assert base.tool_history[0].metrics.new_papers == 5
+    assert base.screened_papers[0].found_via == "adaptive learning"
+
+
+def test_screened_papers_complete(settings):
+    script = [
+        SEARCH1,
+        turn(fc("record_screening", rationale="Screen two.", assessments=[
+            assess(W(1), "Relevant", "Strong match on adaptive learning."), assess(W(2), "Not Relevant"),
+        ])),
+        turn(fc("find_related_papers", seed_paper_id=W(1), rationale="Expand from the strong paper.")),
+    ]
+    result, _, _, _ = run(script, settings.model_copy(update={"max_model_steps": 3}))
+    papers = result.screened_papers
+    assert [p.paper_id for p in papers] == [W(n) for n in (1, 2, 3, 4, 5, 10, 11, 12)]  # discovery order
+    by_id = {p.paper_id: p for p in papers}
+    assert by_id[W(1)].label.value == "Relevant" and by_id[W(1)].reason == "Strong match on adaptive learning."
+    assert by_id[W(2)].label.value == "Not Relevant"
+    assert by_id[W(3)].label is None and by_id[W(3)].reason is None  # not screened
+    assert [p.paper_id for p in papers if p.selected] == result.selected_ids == [W(1)]
+    assert (by_id[W(1)].found_at_step, by_id[W(1)].found_by_tool, by_id[W(1)].found_via) == (
+        1, "search_papers", "adaptive learning")
+    assert (by_id[W(10)].found_at_step, by_id[W(10)].found_by_tool, by_id[W(10)].found_via) == (
+        3, "find_related_papers", f"related:{W(1)}")
+
+
+def test_screened_papers_integrity(settings, raw_by_id):
+    fake = {"title": "FAKE TITLE", "doi": "10.1/FAKE", "year": 1900, "authors": ["Mallory"], "has_abstract": False}
+    script = [
+        SEARCH1,
+        turn(fc("record_screening", rationale="Screen.", assessments=[{**assess(W(1), "Relevant"), **fake}])),
+    ]
+    result, _, _, _ = run(script, settings.model_copy(update={"max_model_steps": 2}))
+    for paper in result.screened_papers:
+        expected = normalize_openalex_work(raw_by_id[paper.paper_id])
+        assert (paper.title, paper.authors, paper.year, paper.doi, paper.source_url) == (
+            expected.title, expected.authors, expected.year, expected.doi, expected.source_url)
+        assert paper.has_abstract == (expected.abstract is not None)
+        assert "abstract" not in paper.model_dump()
+    assert "FAKE" not in json.dumps([p.model_dump(mode="json") for p in result.screened_papers])
+    assert next(p for p in result.screened_papers if p.paper_id == W(4)).has_abstract is False
+
+
+def test_log_has_metrics(settings):
+    script = [SEARCH1, screen_all("Relevant"), turn(fc("finish_research", reason="Done."))]
+    result, _, _, events = run(script, settings)
+    file_results = [e for e in read_log(settings, result.run_id) if e["event"] == "tool_result"]
+    live_results = [e for e in events if e["event"] == "tool_result"]
+    assert len(file_results) == len(live_results) == 3
+    for e in file_results + live_results:
+        assert isinstance(e["data"]["metrics"], dict) and "papers_found" in e["data"]["metrics"]
+    assert file_results[0]["data"]["metrics"]["new_papers"] == 5
+
+
+def test_backward_compat_with_saved_sample():
+    raw = (REPO_ROOT / "demo" / "sample_result.json").read_text(encoding="utf-8")
+    old = ResearchResult.model_validate_json(raw)
+    assert old.screened_papers == [] and old.funnel is None
+    assert all(t.metrics is None for t in old.tool_history)
+    assert old.run_id == "e29b2bbd33a4" and len(old.selected) == 8

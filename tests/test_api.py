@@ -154,3 +154,62 @@ def test_cors_allows_configured_origin_only(api):
     assert ok.headers.get("access-control-allow-origin") == "http://localhost:3000"
     other = client.get("/health", headers={"Origin": "http://evil.example"})
     assert "access-control-allow-origin" not in other.headers
+
+
+# ----- API contract for the added output fields ------------------------------------------------
+def agent_run(request, settings=None, **kw):
+    """Real run_research with scripted fakes (offline)."""
+    from backend.agent.research_agent import run_research
+    from tests.fakes import FakeLLM, FakeOpenAlex, fc, screen_all, turn
+
+    llm = FakeLLM([
+        turn(fc("search_papers", query="adaptive learning", rationale="Initial query.")),
+        screen_all("Relevant"),
+        turn(fc("finish_research", reason="Done.")),
+    ])
+    return run_research(request, llm=llm, search_backend=FakeOpenAlex(), settings=settings)
+
+
+def test_api_contract_new_fields(api):
+    app, client = api
+    app.dependency_overrides[get_research_fn] = lambda: agent_run
+    body = client.post("/api/research", json=VALID).json()
+    assert body["status"] == "completed"
+    funnel = body["funnel"]
+    assert funnel["returned"] == 8
+    assert funnel["returned"] == (
+        funnel["dropped_invalid"] + funnel["dropped_year"] + funnel["dropped_duplicate"] + funnel["unique_found"]
+    )
+    assert [p["paper_id"] for p in body["screened_papers"]] == [
+        "W9000000001", "W9000000002", "W9000000004", "W9000000005",
+    ]
+    assert body["tool_history"][0]["metrics"]["new_papers"] == 4
+    assert all("abstract" not in p for p in body["screened_papers"])
+
+    saved = client.get(f"/api/runs/{body['run_id']}").json()
+    assert saved["screened_papers"] == body["screened_papers"] and saved["funnel"] == funnel
+
+    export = client.get(f"/api/exports/{body['run_id']}")
+    rows = list(csv.reader(export.content.decode("utf-8-sig").splitlines()))
+    assert rows[0] == ["Title", "Authors", "Year", "DOI", "Source URL", "Abstract", "Relevance", "Relevance Reason"]
+    assert len(rows) - 1 == len(body["selected"]) == 3  # CSV still holds only the selected papers
+
+
+def test_openapi_documents_new_fields(api):
+    _, client = api
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    result_schema = next(v for k, v in schemas.items() if k.startswith("ResearchResult"))
+    assert {"screened_papers", "funnel", "tool_history"} <= set(result_schema["properties"])
+    assert {"StepMetrics", "ScreenedPaper", "Funnel"} <= set(schemas)
+
+
+def test_get_run_still_serves_old_results_without_new_fields(api, settings):
+    import shutil
+    from pathlib import Path
+
+    _, client = api
+    run_dir = settings.runs_dir / "e29b2bbd33a4"
+    run_dir.mkdir(parents=True)
+    shutil.copy(Path(__file__).resolve().parent.parent / "demo" / "sample_result.json", run_dir / "result.json")
+    body = client.get("/api/runs/e29b2bbd33a4").json()
+    assert body["run_id"] == "e29b2bbd33a4" and "screened_papers" not in body

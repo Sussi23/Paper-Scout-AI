@@ -11,7 +11,14 @@ from google.genai import types
 from backend.agent.instructions import build_system_instruction, load_criteria, task_message
 from backend.agent.llm import GeminiClient, LLMClient, LLMError
 from backend.agent.run_logger import EventCallback, RunLogger
-from backend.agent.schemas import RelevanceLabel, ResearchRequest, ResearchResult, SelectedPaper
+from backend.agent.schemas import (
+    Funnel,
+    RelevanceLabel,
+    ResearchRequest,
+    ResearchResult,
+    ScreenedPaper,
+    SelectedPaper,
+)
 from backend.agent.state import RunState
 from backend.agent.tool_registry import ToolRegistry
 from backend.config import Settings, load_settings
@@ -40,6 +47,46 @@ _MESSAGES = {
         "llm": "Gemini failed ({detail}); stopped early. Currently {relevant}/{target} Relevant papers.",
     },
 }
+
+
+def build_screened_papers(state: RunState, selected_ids: List[str]) -> List[ScreenedPaper]:
+    """Every registry paper in discovery order. Bibliographic fields come verbatim from the registry;
+    only label and reason come from the model's (validated) assessments. No abstract, to keep it light."""
+    chosen = set(selected_ids)
+    papers = []
+    for pid, meta in state.registry.items():
+        assessment = state.assessments.get(pid)
+        origin = state.origins.get(pid)
+        papers.append(ScreenedPaper(
+            paper_id=meta.paper_id,
+            title=meta.title,
+            authors=list(meta.authors),
+            year=meta.year,
+            doi=meta.doi,
+            source_url=meta.source_url,
+            has_abstract=meta.abstract is not None,
+            label=assessment.label if assessment else None,
+            reason=assessment.reason if assessment else None,
+            selected=pid in chosen,
+            found_at_step=origin.step if origin else 0,
+            found_by_tool=origin.tool if origin else "",
+            found_via=origin.via if origin else "",
+        ))
+    return papers
+
+
+def build_funnel(state: RunState, selected_ids: List[str]) -> Funnel:
+    """Funnel totals from the RunState counters (successful searches only)."""
+    totals = state.search_totals
+    return Funnel(
+        returned=totals.returned,
+        dropped_invalid=totals.dropped_invalid,
+        dropped_year=totals.dropped_year,
+        dropped_duplicate=totals.dropped_duplicate,
+        unique_found=len(state.registry),
+        screened=sum(1 for pid in state.registry if pid in state.assessments),
+        selected=len(selected_ids),
+    )
 
 
 def build_result(state: RunState, model: str, finished_at: Optional[dt.datetime] = None) -> ResearchResult:
@@ -86,6 +133,8 @@ def build_result(state: RunState, model: str, finished_at: Optional[dt.datetime]
         model=model,
         started_at=state.started_at,
         finished_at=finished_at or dt.datetime.now(dt.timezone.utc),
+        screened_papers=build_screened_papers(state, ids),
+        funnel=build_funnel(state, ids),
     )
 
 

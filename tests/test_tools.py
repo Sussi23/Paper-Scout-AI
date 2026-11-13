@@ -296,3 +296,27 @@ def test_export_empty_result_has_header_only(tmp_path):
     path = export_csv(make_result([]), tmp_path / "empty.csv")
     with path.open(encoding="utf-8-sig", newline="") as fh:
         assert list(csv.reader(fh)) == [CSV_HEADER]
+
+
+# ----- per-search identity used by the funnel ---------------------------------------------------
+def test_search_stats_identity_for_every_search():
+    backend, seen = FakeOpenAlex(), SeenIndex()
+    for query in ("adaptive learning", "learning analytics", "virtual reality education"):
+        out = search_openalex(backend, query, year_from=2019, year_to=2024, limit=25, seen=seen)
+        s = out.stats
+        assert s.returned == s.dropped_invalid + s.dropped_year + s.dropped_duplicate + len(out.new_papers)
+
+
+def test_run_state_register_keeps_first_origin_and_accumulates_totals(settings):
+    from backend.agent.schemas import ResearchRequest
+    from backend.agent.state import RunState
+
+    state = RunState(request=ResearchRequest(topic="adaptive learning"), settings=settings, run_id="abcdef012345")
+    first = search_openalex(FakeOpenAlex(), "adaptive learning", year_from=None, year_to=None, limit=25, seen=SeenIndex())
+    state.register(first.new_papers, step=1, tool="search_papers", via="adaptive learning")
+    state.add_search_stats(first.stats)
+    state.register(first.new_papers[:1], step=4, tool="find_related_papers", via="related:X")  # already known
+    assert state.origins[first.new_papers[0].paper_id].step == 1
+    assert state.search_totals.returned == 8
+    state.register(first.new_papers)  # old call style (no origin arguments) still works
+    assert len(state.registry) == len(first.new_papers)

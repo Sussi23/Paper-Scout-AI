@@ -24,7 +24,14 @@ from backend.agent.instructions import load_criteria  # noqa: E402
 from backend.agent.llm import GeminiClient, LLMClient, LLMError  # noqa: E402
 from backend.agent.research_agent import build_result  # noqa: E402
 from backend.agent.run_logger import RunLogger  # noqa: E402
-from backend.agent.schemas import PaperAssessment, RelevanceLabel, ResearchRequest, ResearchResult, ToolCallLog  # noqa: E402
+from backend.agent.schemas import (  # noqa: E402
+    PaperAssessment,
+    RelevanceLabel,
+    ResearchRequest,
+    ResearchResult,
+    StepMetrics,
+    ToolCallLog,
+)
 from backend.agent.state import RunState  # noqa: E402
 from backend.agent.tool_registry import _paper_view  # noqa: E402
 from backend.config import ConfigError, Settings, load_settings  # noqa: E402
@@ -84,15 +91,21 @@ def run_baseline(
         state.queries.append(query)
         summary = ""
         status, code = "ok", None
+        step_metrics: Dict[str, int] = {}
         try:
             outcome = search_openalex(
                 search_backend, query, year_from=request.year_from, year_to=request.year_to,
                 limit=settings.search_page_size, seen=state.seen,
             )
-            state.register(outcome.new_papers)
+            state.register(outcome.new_papers, step=i, tool="search_papers", via=query)
+            state.add_search_stats(outcome.stats)
             state.successful_searches += 1
             s = outcome.stats
             summary = f"search({query!r}) -> {s.returned} returned, {len(outcome.new_papers)} new"
+            step_metrics = {
+                "returned": s.returned, "new_papers": len(outcome.new_papers), "dropped_year": s.dropped_year,
+                "dropped_duplicate": s.dropped_duplicate, "dropped_invalid": s.dropped_invalid,
+            }
         except OpenAlexError as exc:
             status, code = "error", exc.code
             summary = f"search({query!r}) -> {exc.code}"
@@ -100,6 +113,7 @@ def run_baseline(
         state.tool_history.append(ToolCallLog(
             step=i, tool="search_papers", args={"query": query}, rationale="Fixed keyword list (human-chosen).",
             status=status, error_code=code, summary=summary,
+            metrics=StepMetrics(**{**step_metrics, **state.snapshot()}),
         ))
         log.log("tool_result", i, name="search_papers", status=status, summary=summary)
 
