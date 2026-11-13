@@ -88,7 +88,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "openalex_key_configured": bool(current.openalex_key()),
         }
 
-    @app.post("/api/research")
+    @app.post("/api/research", response_model=ResearchResult)
     def research(
         body: ResearchRequest,
         request: Request,

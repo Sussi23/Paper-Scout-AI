@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -19,8 +19,22 @@ def _clip(text: Any, n: int = 160) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def format_event(rec: Dict[str, Any]) -> List[str]:
-    """Turn one log record into one or more display lines."""
+def metrics_note(metrics: Any, target: Optional[int] = None) -> str:
+    """Short summary of a tool_result's metrics, e.g. `[5 mới, Relevant 3/8]` (empty for old logs)."""
+    if not isinstance(metrics, dict):
+        return ""
+    parts = []
+    if metrics.get("new_papers") is not None:
+        parts.append(f"{metrics['new_papers']} mới")
+    if metrics.get("accepted") is not None:
+        parts.append(f"{metrics['accepted']} ghi nhận")
+    relevant = metrics.get("relevant", 0)
+    parts.append(f"Relevant {relevant}/{target}" if target else f"Relevant {relevant}")
+    return " [" + ", ".join(parts) + "]"
+
+
+def format_event(rec: Dict[str, Any], target: Optional[int] = None) -> List[str]:
+    """Turn one log record into one or more display lines (`target` = num_papers, for the metrics note)."""
     ts = str(rec.get("ts", ""))[11:19]
     step = rec.get("step")
     prefix = f"{ts}  step {step:>2}  " if step is not None else f"{ts}          "
@@ -50,7 +64,8 @@ def format_event(rec: Dict[str, Any]) -> List[str]:
         return lines
     if event == "tool_result":
         mark = {"ok": "ok", "rejected": "REJECTED", "error": "ERROR"}.get(data.get("status"), "?")
-        return [f"{prefix}      {mark}: {_clip(data.get('summary'))}  ({data.get('latency_ms')} ms)"]
+        note = metrics_note(data.get("metrics"), target)
+        return [f"{prefix}      {mark}: {_clip(data.get('summary'))}{note}  ({data.get('latency_ms')} ms)"]
     if event == "guard":
         return [f"{prefix}GUARD {data.get('kind')}: {_clip(data.get('message') or data)}"]
     if event == "relabel":
@@ -65,13 +80,19 @@ def format_event(rec: Dict[str, Any]) -> List[str]:
 
 def show(path: Path) -> None:
     """Print the timeline of the JSONL file at `path`."""
+    target: Optional[int] = None
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
-            for out in format_event(json.loads(line)):
+            rec = json.loads(line)
+            if rec.get("event") == "run_started":
+                target = (rec.get("data", {}).get("request") or {}).get("num_papers")
+            for out in format_event(rec, target):
                 print(out)
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):  # Windows consoles default to cp1252, which cannot print Vietnamese
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if len(sys.argv) != 2:
         print(__doc__)
         return 2

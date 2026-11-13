@@ -8,13 +8,13 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from google.genai import types
 
 from backend.agent.run_logger import RunLogger, redact_secrets
-from backend.agent.schemas import MIN_YEAR, PaperMetadata, RelevanceLabel, ToolCallLog, max_year
+from backend.agent.schemas import MIN_YEAR, PaperMetadata, RelevanceLabel, StepMetrics, ToolCallLog, max_year
 from backend.agent.state import RunState
 from backend.config import Settings
 from backend.tools.processing import normalize_title
@@ -52,12 +52,14 @@ class ToolError(Exception):
 
 @dataclass
 class ToolOutcome:
-    """What a handler returns: the model-facing response, a one-line summary, and log status."""
+    """What a handler returns: the model-facing response, a one-line summary, log status, and
+    step-specific UI metrics (never sent to the model; dispatch adds the state snapshot)."""
 
     response: Dict[str, Any]
     summary: str
     status: str = "ok"
     error_code: Optional[str] = None
+    metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 # --- declarations ------------------------------------------------------------------------------
@@ -259,6 +261,7 @@ class ToolRegistry:
                 error_code=INTERNAL_ERROR,
             )
         latency_ms = int((time.perf_counter() - started) * 1000)
+        metrics = StepMetrics(**{**outcome.metrics, **state.snapshot()})
         state.tool_history.append(
             ToolCallLog(
                 step=step,
@@ -269,11 +272,12 @@ class ToolRegistry:
                 error_code=outcome.error_code,
                 summary=outcome.summary,
                 latency_ms=latency_ms,
+                metrics=metrics,
             )
         )
         log.log(
             "tool_result", step, name=name, status=outcome.status, error_code=outcome.error_code,
-            summary=outcome.summary, latency_ms=latency_ms,
+            summary=outcome.summary, latency_ms=latency_ms, metrics=metrics.model_dump(mode="json"),
         )
         return outcome.response
 
@@ -317,8 +321,11 @@ class ToolRegistry:
             )
         state.searches_used += 1
 
-    def _search_result(self, state: RunState, outcome: SearchOutcome) -> Dict[str, Any]:
-        state.register(outcome.new_papers)
+    def _search_result(
+        self, state: RunState, outcome: SearchOutcome, step: int = 0, tool: str = "", via: str = ""
+    ) -> Dict[str, Any]:
+        state.register(outcome.new_papers, step=step, tool=tool, via=via)
+        state.add_search_stats(outcome.stats)
         state.successful_searches += 1
         limit = self._settings.abstract_chars_for_model
         return {
@@ -327,6 +334,18 @@ class ToolRegistry:
             "stats": outcome.stats.as_dict(),
             "budget": state.budget(),
             "progress": state.progress(),
+        }
+
+    @staticmethod
+    def _search_metrics(outcome: SearchOutcome) -> Dict[str, int]:
+        """Step metrics of a successful search, taken from its FilterStats (not recomputed)."""
+        s = outcome.stats
+        return {
+            "returned": s.returned,
+            "new_papers": len(outcome.new_papers),
+            "dropped_year": s.dropped_year,
+            "dropped_duplicate": s.dropped_duplicate,
+            "dropped_invalid": s.dropped_invalid,
         }
 
     @staticmethod
@@ -359,10 +378,12 @@ class ToolRegistry:
         outcome = search_openalex(
             self._backend, query, year_from=eff_from, year_to=eff_to, limit=limit, seen=state.seen
         )
-        response = self._search_result(state, outcome)
+        response = self._search_result(state, outcome, step=step, tool="search_papers", via=query)
         if repeated:
             response["note"] = "This query was already used earlier; prefer a different formulation."
-        return ToolOutcome(response, self._search_summary(f"search_papers({query!r})", outcome))
+        return ToolOutcome(
+            response, self._search_summary(f"search_papers({query!r})", outcome), metrics=self._search_metrics(outcome)
+        )
 
     def _find_related_papers(self, args: Dict[str, Any], state: RunState, step: int, log: RunLogger) -> ToolOutcome:
         seed = _required_str("seed_paper_id", args.get("seed_paper_id"))
@@ -381,7 +402,10 @@ class ToolRegistry:
         outcome = find_related(
             self._backend, seed, year_from=eff_from, year_to=eff_to, limit=limit, seen=state.seen
         )
-        return ToolOutcome(self._search_result(state, outcome), self._search_summary(f"find_related_papers({seed})", outcome))
+        response = self._search_result(state, outcome, step=step, tool="find_related_papers", via=f"related:{seed}")
+        return ToolOutcome(
+            response, self._search_summary(f"find_related_papers({seed})", outcome), metrics=self._search_metrics(outcome)
+        )
 
     def _record_screening(self, args: Dict[str, Any], state: RunState, step: int, log: RunLogger) -> ToolOutcome:
         from backend.agent.schemas import PaperAssessment  # local import keeps module header small
@@ -393,6 +417,7 @@ class ToolRegistry:
         accepted: List[str] = []
         rejected: List[Dict[str, str]] = []
         relabeled = 0
+        labels_this_step = {label.value: 0 for label in RelevanceLabel}
 
         def reject(pid: Any, code: str, message: str) -> None:
             rejected.append({"paper_id": str(pid), "code": code, "message": message})
@@ -424,21 +449,26 @@ class ToolRegistry:
             # only paper_id/label/reason are read; any extra field the model sent is ignored
             state.assessments[pid] = PaperAssessment(paper_id=pid, label=label, reason=reason)
             accepted.append(pid)
+            labels_this_step[label.value] += 1
 
         summary = f"record_screening -> {len(accepted)} ghi nhận, {len(rejected)} từ chối"
         if relabeled:
             summary += f", {relabeled} gắn nhãn lại"
+        metrics = {
+            "accepted": len(accepted), "rejected": len(rejected), "relabeled": relabeled,
+            "labels_this_step": labels_this_step,
+        }
         if not accepted:
             first = rejected[0]["code"] if rejected else INVALID_ARGS
             return ToolOutcome(
                 error_response(first, "No assessment was accepted; see 'rejected'.", True,
                                rejected=rejected, progress=state.progress()),
-                summary, status="rejected", error_code=first,
+                summary, status="rejected", error_code=first, metrics=metrics,
             )
         response: Dict[str, Any] = {
             "status": "ok", "accepted": accepted, "rejected": rejected, "progress": state.progress()
         }
-        return ToolOutcome(response, summary)
+        return ToolOutcome(response, summary, metrics=metrics)
 
     def _finish_research(self, args: Dict[str, Any], state: RunState, step: int, log: RunLogger) -> ToolOutcome:
         reason = _required_str("reason", args.get("reason"))
