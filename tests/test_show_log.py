@@ -16,3 +16,5 @@ def test_show_log_prints_timeline(settings, capsys):
     out = capsys.readouterr().out
     assert "RUN START" in out and "TOOL  search_papers" in out and "why: Initial broad query" in out
     assert "RUN END  status=completed" in out
+    assert "[5 mới, Relevant 0/3]" in out  # metrics note on the search step
+    assert "[5 ghi nhận, Relevant 5/3]" in out  # and on the screening step
